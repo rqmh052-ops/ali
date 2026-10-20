@@ -1,0 +1,265 @@
+import 'dart:async';
+import 'package:flutter/material.dart';
+import 'package:provider/provider.dart';
+import 'auth_provider.dart';
+import 'models.dart';
+import 'app_models.dart';
+import 'constants.dart';
+import 'formatters.dart';
+import 'glass_card.dart';
+import 'empty_state.dart';
+import 'skeleton.dart';
+import 'app_toast.dart';
+import 'error_utils.dart';
+
+class DashboardScreen extends StatefulWidget {
+  const DashboardScreen({super.key});
+  @override
+  State<DashboardScreen> createState() => _DashboardScreenState();
+}
+
+class _DashboardScreenState extends State<DashboardScreen> {
+  Timer? _timer;
+  ServerResources? _res;
+  AppStatus? _app;
+  String? _err;
+  bool _loading = true;
+
+  @override
+  void initState() {
+    super.initState();
+    _load();
+    _timer = Timer.periodic(const Duration(seconds: 3), (_) => _load());
+  }
+
+  @override
+  void dispose() { _timer?.cancel(); super.dispose(); }
+
+  Future<void> _load() async {
+    final api = context.read<AuthProvider>().api!;
+    try {
+      final r = await Future.wait([api.serverResources(), api.appStatus()]);
+      if (!mounted) return;
+      setState(() {
+        _res = r[0] as ServerResources;
+        _app = r[1] as AppStatus;
+        _err = null;
+        _loading = false;
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() { _err = friendlyError(e); _loading = false; });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      body: SafeArea(
+        child: RefreshIndicator(
+          onRefresh: _load,
+          color: C.primary,
+          backgroundColor: C.surface,
+          child: ListView(
+            padding: const EdgeInsets.all(16),
+            children: [
+              _header(),
+              const SizedBox(height: 16),
+              if (_loading) const SkeletonList(count: 4),
+              if (_err != null) _errCard(),
+              if (_res != null) _resourcesCard(_res!),
+              if (_app != null) ...[
+                const SizedBox(height: 16),
+                _appCard(_app!),
+              ],
+              const SizedBox(height: 24),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _header() {
+    final user = context.watch<AuthProvider>().user;
+    return Row(children: [
+      Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        ShaderMask(
+          shaderCallback: (r) => const LinearGradient(
+              colors: [C.primary, C.accent]).createShader(r),
+          child: const Text('HOSTING',
+              style: TextStyle(fontSize: 22, fontWeight: FontWeight.w900,
+                  letterSpacing: 2, color: Colors.white)),
+        ),
+        Text('Signed in as ${user?.username ?? '—'}',
+            style: const TextStyle(color: C.muted, fontSize: 12)),
+      ])),
+      if (user?.isAdmin == true)
+        Container(
+          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+          decoration: BoxDecoration(
+            color: C.accent, borderRadius: BorderRadius.circular(20)),
+          child: const Text('ADMIN',
+              style: TextStyle(color: Colors.black, fontWeight: FontWeight.w800, fontSize: 10)),
+        ),
+    ]);
+  }
+
+  Widget _errCard() => Container(
+    padding: const EdgeInsets.all(14),
+    decoration: BoxDecoration(
+      color: C.danger.withValues(alpha: .1),
+      borderRadius: BorderRadius.circular(14),
+      border: Border.all(color: C.danger.withValues(alpha: .4)),
+    ),
+    child: Row(children: [
+      const Icon(Icons.wifi_off, color: C.danger, size: 20),
+      const SizedBox(width: 10),
+      Expanded(child: Text(_err!,
+          style: const TextStyle(color: C.danger, fontSize: 12))),
+    ]),
+  );
+
+  Widget _resourcesCard(ServerResources r) {
+    final stateC = stateColor(r.state);
+    return GlassCard(
+      accent: stateC,
+      glow: r.state == 'running',
+      padding: const EdgeInsets.all(18),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Row(children: [
+          Container(width: 10, height: 10,
+            decoration: BoxDecoration(color: stateColor(r.state), shape: BoxShape.circle)),
+          const SizedBox(width: 8),
+          Expanded(child: Text(r.name,
+              style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w700))),
+          Text(r.state.toUpperCase(),
+              style: TextStyle(color: stateColor(r.state),
+                  fontSize: 11, fontWeight: FontWeight.w700, letterSpacing: 1)),
+        ]),
+        const SizedBox(height: 6),
+        Row(children: [
+          const Icon(Icons.timer_outlined, size: 14, color: C.muted),
+          const SizedBox(width: 4),
+          Text(fTime(r.uptimeSeconds), style: const TextStyle(color: C.muted, fontSize: 12)),
+          const SizedBox(width: 16),
+          const Icon(Icons.favorite_border, size: 14, color: C.muted),
+          const SizedBox(width: 4),
+          Text(r.healthLevel.toUpperCase(),
+              style: TextStyle(color: r.healthLevel == 'ok' ? C.success : C.warning,
+                  fontSize: 12, fontWeight: FontWeight.w600)),
+        ]),
+        const SizedBox(height: 18),
+        _bar('CPU', r.cpu, null, null, C.primary),
+        const SizedBox(height: 12),
+        _bar('MEM', r.memPercent, r.memUsed, r.memLimit, C.accent),
+        const SizedBox(height: 12),
+        _bar('DISK', r.diskPercent, r.diskUsed, r.diskLimit, C.info),
+        const SizedBox(height: 14),
+        Row(children: [
+          _net('▼', fSize(r.netRx), C.success),
+          const SizedBox(width: 20),
+          _net('▲', fSize(r.netTx), C.accent),
+        ]),
+        if (r.healthIssues.isNotEmpty) ...[
+          const SizedBox(height: 14),
+          ...r.healthIssues.take(3).map((i) => Padding(
+            padding: const EdgeInsets.only(bottom: 4),
+            child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              const Text('⚠ ', style: TextStyle(color: C.warning)),
+              Expanded(child: Text(i,
+                  style: const TextStyle(color: C.warning, fontSize: 12))),
+            ]),
+          )),
+        ],
+      ]),
+    );
+  }
+
+  Widget _bar(String label, double? pct, int? used, int? limit, Color color) {
+    final v = pct ?? 0;
+    final colorByPct = v < 75 ? C.success : v < 90 ? C.warning : C.danger;
+    return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+      Row(children: [
+        SizedBox(width: 42, child: Text(label,
+            style: const TextStyle(color: C.muted, fontSize: 11, fontWeight: FontWeight.w700))),
+        Expanded(child: ClipRRect(
+          borderRadius: BorderRadius.circular(4),
+          child: LinearProgressIndicator(
+            value: (v / 100).clamp(0, 1),
+            minHeight: 6,
+            backgroundColor: C.border,
+            valueColor: AlwaysStoppedAnimation(colorByPct),
+          ),
+        )),
+        const SizedBox(width: 10),
+        SizedBox(width: 44, child: Text('${v.toStringAsFixed(1)}%',
+            textAlign: TextAlign.right,
+            style: const TextStyle(fontSize: 11, fontWeight: FontWeight.w700))),
+      ]),
+      if (limit != null && limit > 0) Padding(
+        padding: const EdgeInsets.only(left: 42, top: 3),
+        child: Text('${fSize(used)} / ${fSize(limit)}',
+            style: const TextStyle(color: C.muted, fontSize: 10)),
+      ),
+    ]);
+  }
+
+  Widget _net(String arrow, String v, Color c) => Row(mainAxisSize: MainAxisSize.min, children: [
+    Text(arrow, style: TextStyle(color: c, fontSize: 14)),
+    const SizedBox(width: 4),
+    Text(v, style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600)),
+  ]);
+
+  Widget _appCard(AppStatus st) {
+    final c = stateColor(st.state);
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: C.surface,
+        borderRadius: BorderRadius.circular(18),
+        border: Border.all(color: C.border),
+      ),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Row(children: [
+          Container(width: 10, height: 10,
+            decoration: BoxDecoration(color: c, shape: BoxShape.circle)),
+          const SizedBox(width: 8),
+          const Text('تطبيقي',
+              style: TextStyle(fontSize: 15, fontWeight: FontWeight.w700)),
+          const Spacer(),
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+            decoration: BoxDecoration(
+              color: c.withValues(alpha: .15),
+              borderRadius: BorderRadius.circular(20),
+            ),
+            child: Text(st.state.toUpperCase(),
+                style: TextStyle(color: c, fontSize: 9,
+                    fontWeight: FontWeight.w900, letterSpacing: .8)),
+          ),
+        ]),
+        const SizedBox(height: 10),
+        Row(children: [
+          Icon(st.app.exists ? Icons.check_circle : Icons.cancel,
+              color: st.app.exists ? C.success : C.danger, size: 14),
+          const SizedBox(width: 6),
+          Text('app.py ${st.app.exists ? "موجود" : "غير موجود"}',
+              style: TextStyle(color: st.app.exists ? C.success : C.danger,
+                  fontSize: 12, fontWeight: FontWeight.w600)),
+          const Spacer(),
+          Text(fSize(st.app.size),
+              style: const TextStyle(color: C.muted, fontSize: 11,
+                  fontFamily: 'monospace')),
+        ]),
+        const SizedBox(height: 6),
+        Row(children: [
+          const Icon(Icons.timer_outlined, size: 12, color: C.muted),
+          const SizedBox(width: 4),
+          Text(fTime(st.uptimeSeconds),
+              style: const TextStyle(color: C.muted, fontSize: 11)),
+        ]),
+      ]),
+    );
+  }
+}
