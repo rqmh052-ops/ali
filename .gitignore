@@ -1,0 +1,9 @@
+
+# Keystore — DO NOT COMMIT
+android/keystore/
+*.jks
+*.keystore
+key.properties
+*.b64
+*.p12
+*.jks
